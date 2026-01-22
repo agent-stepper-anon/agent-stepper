@@ -1,0 +1,2797 @@
+diff --git a/.devcontainer/Dockerfile b/.devcontainer/Dockerfile
+deleted file mode 100644
+index 2169597..0000000
+--- a/.devcontainer/Dockerfile
++++ /dev/null
+@@ -1,25 +0,0 @@
+-FROM mcr.microsoft.com/devcontainers/base:jammy
+-
+-# Install Python 3.10 and related tools
+-RUN apt-get update && \
+-    apt-get install -y python3.10 python3.10-dev python3.10-venv python3-pip && \
+-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 && \
+-    pip3 install --upgrade pip
+-
+-# Install additional dependencies
+-RUN apt-get update && apt-get install -y openjdk-11-jdk subversion dos2unix cpanminus libdbi-perl git
+-
+-# Set up defects4j
+-WORKDIR /repair_agent
+-COPY . .
+-WORKDIR /repair_agent/repair_agent
+-RUN rm -rf defects4j && \
+-    git clone https://github.com/rjust/defects4j.git && \
+-    cp -r ../data/buggy-lines defects4j && \
+-    cp -r ../data/buggy-methods defects4j && \
+-    cd defects4j && \
+-    cpanm --installdeps . \
+-    ./init.sh
+-
+-# Set the API key and start the experiment
+-CMD bash -c "python3 -u set_api_key.py && ./run_on_defects4j.sh experimental_setups/bugs_list hyperparams.json gpt-4o-mini"
+\ No newline at end of file
+diff --git a/.devcontainer/devcontainer.json b/.devcontainer/devcontainer.json
+index b822f99..9e5012b 100644
+--- a/.devcontainer/devcontainer.json
++++ b/.devcontainer/devcontainer.json
+@@ -10,7 +10,6 @@
+ 			"version": "3.10"
+ 		}
+ 	},
+-	"runArgs": ["--network=host"],
+ 
+ 	// Features to add to the dev container. More info: https://containers.dev/features.
+ 	// "features": {},
+diff --git a/.gitignore b/.gitignore
+index 8d9d790..a623684 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -159,21 +159,9 @@ cython_debug/
+ #.idea/
+ token.txt
+ 
+-debugger
+-logs
+-auto_gpt_workspace
+-.env
+-.vscode
+-
+ repair_agent/auto_gpt_workspace/
+ repair_agent/experimental_setups/
+ repair_agent/logs/
+ repair_agent/exception_files.txt
+ repair_agent/parsing_erros_responses.txt
+ repair_agent/response_content.txt
+-
+-debugger
+-logs
+-auto_gpt_workspace
+-.env
+-.vscode
+\ No newline at end of file
+diff --git a/repair_agent/autogpt/agents/agent.py b/repair_agent/autogpt/agents/agent.py
+index b5a1573..84430eb 100644
+--- a/repair_agent/autogpt/agents/agent.py
++++ b/repair_agent/autogpt/agents/agent.py
+@@ -29,7 +29,6 @@ from autogpt.commands.defects4j_static import query_for_mutants, construct_fix_c
+ 
+ from .base import AgentThoughts, BaseAgent, CommandArgs, CommandName
+ 
+-from agentstepper.api.debugger import AgentStepper
+ 
+ class Agent(BaseAgent):
+     """Agent class for interacting with Auto-GPT."""
+@@ -126,9 +125,6 @@ class Agent(BaseAgent):
+         command_args: dict[str, str] | None,
+         user_input: str | None,
+     ) -> str:
+-        #if self.debugger:
+-        #    self.debugger.begin_tool_invocation_breakpoint(command_name, command_args)
+-        
+         # Execute command
+         if command_name is not None and command_name.lower().startswith("error"):
+             result = f"Could not execute command: {command_name}{command_args}"
+@@ -174,8 +170,6 @@ class Agent(BaseAgent):
+         else:
+             self.history.add("user", result, "action_result")
+ 
+-        #if self.debugger:
+-        #    self.debugger.end_tool_invocation_breakpoint(result)
+         return result
+ 
+ 
+diff --git a/repair_agent/autogpt/agents/base.py b/repair_agent/autogpt/agents/base.py
+index 850be9d..b02eb7e 100644
+--- a/repair_agent/autogpt/agents/base.py
++++ b/repair_agent/autogpt/agents/base.py
+@@ -20,8 +20,6 @@ from autogpt.prompts.prompt import DEFAULT_TRIGGERING_PROMPT
+ from autogpt.json_utils.utilities import extract_dict_from_response
+ from autogpt.commands.defects4j_static import get_info, run_tests, query_for_fix, query_for_commands, extract_command, execute_command, create_fix_template
+ 
+-from agentstepper.api.debugger import AgentStepper
+-
+ CommandName = str
+ CommandArgs = dict[str, str]
+ AgentThoughts = dict[str, Any]
+@@ -30,7 +28,6 @@ class BaseAgent(metaclass=ABCMeta):
+     """Base class for all Auto-GPT agents."""
+ 
+     ThoughtProcessID = Literal["one-shot"]
+-    debugger: AgentStepper
+ 
+     def __init__(
+         self,
+@@ -947,13 +944,6 @@ please use the indicated format and produce a list, like this:
+                 query = self.construct_fix_query()
+                 suggested_fixes = query_for_fix(query, )
+                 self.save_to_json(os.path.join("experimental_setups", exps[-1], "external_fixes", "external_fixes_{}_{}.json".format(project_name, bug_index)), json.loads(suggested_fixes))
+-            
+-        if self.debugger:
+-            modifiedMessages = self.debugger.begin_llm_query_breakpoint({'MessageSequence': prompt.raw()})
+-            try:
+-                prompt.setFromDictList(modifiedMessages['MessageSequence'])
+-            except e:
+-                pass # Don't apply changes if there's a problem with parsing them.
+ 
+         raw_response = create_chat_completion(
+             prompt,
+@@ -989,11 +979,8 @@ please use the indicated format and produce a list, like this:
+                     raw_response = new_response
+             self.cycle_count += 1
+ 
++            return self.on_response(raw_response, thought_process_id, prompt, instruction)
+         except SyntaxError as e:
+-            pass
+-        finally:
+-            if self.debugger:
+-                raw_response.content = self.debugger.end_llm_query_breakpoint(raw_response.content)
+             return self.on_response(raw_response, thought_process_id, prompt, instruction)
+         
+     @abstractmethod
+diff --git a/repair_agent/autogpt/app/main.py b/repair_agent/autogpt/app/main.py
+index d3b445b..094b2e2 100644
+--- a/repair_agent/autogpt/app/main.py
++++ b/repair_agent/autogpt/app/main.py
+@@ -33,8 +33,6 @@ from autogpt.speech import say_text
+ from autogpt.workspace import Workspace
+ from scripts.install_plugin_deps import install_plugin_dependencies
+ 
+-from agentstepper.api.debugger import AgentStepper
+-
+ 
+ def run_auto_gpt(
+     continuous: bool,
+@@ -222,120 +220,113 @@ def run_interaction_loop(
+         config.continuous_mode, config.continuous_limit
+     )
+     spinner = Spinner("Thinking...", plain_output=config.plain_output)
+-    
+-    debugger: AgentStepper
+-    with AgentStepper('RepairAgent', 'localhost', 8765, 'auto_gpt_workspace/compress_16_buggy') as debugger:
+-        agent.debugger = debugger
+-
+-        def graceful_agent_interrupt(signum: int, frame: Optional[FrameType]) -> None:
+-            nonlocal cycle_budget, cycles_remaining, spinner
+-            if cycles_remaining in [0, 1, math.inf]:
+-                logger.typewriter_log(
+-                    "Interrupt signal received. Stopping continuous command execution "
+-                    "immediately.",
+-                    Fore.RED,
+-                )
+-                sys.exit()
+-            else:
+-                restart_spinner = spinner.running
+-                if spinner.running:
+-                    spinner.stop()
+ 
++    def graceful_agent_interrupt(signum: int, frame: Optional[FrameType]) -> None:
++        nonlocal cycle_budget, cycles_remaining, spinner
++        if cycles_remaining in [0, 1, math.inf]:
++            logger.typewriter_log(
++                "Interrupt signal received. Stopping continuous command execution "
++                "immediately.",
++                Fore.RED,
++            )
++            sys.exit()
++        else:
++            restart_spinner = spinner.running
++            if spinner.running:
++                spinner.stop()
++
++            logger.typewriter_log(
++                "Interrupt signal received. Stopping continuous command execution.",
++                Fore.RED,
++            )
++            cycles_remaining = 1
++            if restart_spinner:
++                spinner.start()
++
++    # Set up an interrupt signal for the agent.
++    signal.signal(signal.SIGINT, graceful_agent_interrupt)
++
++    #########################
++    # Application Main Loop #
++    #########################
++
++    while cycles_remaining > 0:
++        logger.debug(f"Cycle budget: {cycle_budget}; remaining: {cycles_remaining}")
++
++        ########
++        # Plan #
++        ########
++        # Have the agent determine the next action to take.
++        with spinner:
++            command_name, command_args, assistant_reply_dict = agent.think()
++
++        ###############
++        # Update User #
++        ###############
++        # Print the assistant's thoughts and the next command to the user.
++        update_user(config, ai_config, command_name, command_args, assistant_reply_dict)
++
++        ##################
++        # Get user input #
++        ##################
++        if cycles_remaining == 1:  # Last cycle
++            user_feedback, user_input, new_cycles_remaining = get_user_feedback(
++                config,
++                ai_config,
++            )
++
++            if user_feedback == UserFeedback.AUTHORIZE:
++                if new_cycles_remaining is not None:
++                    # Case 1: User is altering the cycle budget.
++                    if cycle_budget > 1:
++                        cycle_budget = new_cycles_remaining + 1
++                    # Case 2: User is running iteratively and
++                    #   has initiated a one-time continuous cycle
++                    cycles_remaining = new_cycles_remaining + 1
++                else:
++                    # Case 1: Continuous iteration was interrupted -> resume
++                    if cycle_budget > 1:
++                        logger.typewriter_log(
++                            "RESUMING CONTINUOUS EXECUTION: ",
++                            Fore.MAGENTA,
++                            f"The cycle budget is {cycle_budget}.",
++                        )
++                    # Case 2: The agent used up its cycle budget -> reset
++                    cycles_remaining = cycle_budget + 1
+                 logger.typewriter_log(
+-                    "Interrupt signal received. Stopping continuous command execution.",
+-                    Fore.RED,
++                    "-=-=-=-=-=-=-= COMMAND AUTHORISED BY USER -=-=-=-=-=-=-=",
++                    Fore.MAGENTA,
++                    "",
+                 )
+-                cycles_remaining = 1
+-                if restart_spinner:
+-                    spinner.start()
+-
+-        # Set up an interrupt signal for the agent.
+-        signal.signal(signal.SIGINT, graceful_agent_interrupt)
+-
+-        #########################
+-        # Application Main Loop #
+-        #########################
+-
+-        while cycles_remaining > 0:
+-            logger.debug(f"Cycle budget: {cycle_budget}; remaining: {cycles_remaining}")
+-
+-            ########
+-            # Plan #
+-            ########
+-            # Have the agent determine the next action to take.
+-            with spinner:
+-                command_name, command_args, assistant_reply_dict = agent.think()
+-
+-            ###############
+-            # Update User #
+-            ###############
+-            # Print the assistant's thoughts and the next command to the user.
+-            update_user(config, ai_config, command_name, command_args, assistant_reply_dict)
+-
+-            ##################
+-            # Get user input #
+-            ##################
+-            if cycles_remaining == 1:  # Last cycle
+-                user_feedback, user_input, new_cycles_remaining = get_user_feedback(
+-                    config,
+-                    ai_config,
++            elif user_feedback == UserFeedback.EXIT:
++                logger.typewriter_log("Exiting...", Fore.YELLOW)
++                exit()
++            else:  # user_feedback == UserFeedback.TEXT
++                command_name = "human_feedback"
++        else:
++            user_input = None
++            # First log new-line so user can differentiate sections better in console
++            logger.typewriter_log("\n")
++            if cycles_remaining != math.inf:
++                # Print authorized commands left value
++                logger.typewriter_log(
++                    "AUTHORISED COMMANDS LEFT: ", Fore.CYAN, f"{cycles_remaining}"
+                 )
+ 
+-                if user_feedback == UserFeedback.AUTHORIZE:
+-                    if new_cycles_remaining is not None:
+-                        # Case 1: User is altering the cycle budget.
+-                        if cycle_budget > 1:
+-                            cycle_budget = new_cycles_remaining + 1
+-                        # Case 2: User is running iteratively and
+-                        #   has initiated a one-time continuous cycle
+-                        cycles_remaining = new_cycles_remaining + 1
+-                    else:
+-                        # Case 1: Continuous iteration was interrupted -> resume
+-                        if cycle_budget > 1:
+-                            logger.typewriter_log(
+-                                "RESUMING CONTINUOUS EXECUTION: ",
+-                                Fore.MAGENTA,
+-                                f"The cycle budget is {cycle_budget}.",
+-                            )
+-                        # Case 2: The agent used up its cycle budget -> reset
+-                        cycles_remaining = cycle_budget + 1
+-                    logger.typewriter_log(
+-                        "-=-=-=-=-=-=-= COMMAND AUTHORISED BY USER -=-=-=-=-=-=-=",
+-                        Fore.MAGENTA,
+-                        "",
+-                    )
+-                elif user_feedback == UserFeedback.EXIT:
+-                    logger.typewriter_log("Exiting...", Fore.YELLOW)
+-                    exit()
+-                else:  # user_feedback == UserFeedback.TEXT
+-                    command_name = "human_feedback"
+-            else:
+-                user_input = None
+-                # First log new-line so user can differentiate sections better in console
+-                logger.typewriter_log("\n")
+-                if cycles_remaining != math.inf:
+-                    # Print authorized commands left value
+-                    logger.typewriter_log(
+-                        "AUTHORISED COMMANDS LEFT: ", Fore.CYAN, f"{cycles_remaining}"
+-                    )
+-
+-            ###################
+-            # Execute Command #
+-            ###################
+-            # Decrement the cycle counter first to reduce the likelihood of a SIGINT
+-            # happening during command execution, setting the cycles remaining to 1,
+-            # and then having the decrement set it to 0, exiting the application.
+-            if command_name != "human_feedback":
+-                cycles_remaining -= 1
+-                
+-            if command_name: (command_name, command_args) = debugger.begin_tool_invocation_breakpoint(command_name, command_args)
+-            result = agent.execute(command_name, command_args, user_input)
+-            if command_name: result = debugger.end_tool_invocation_breakpoint(result)
+-            
+-            if result is not None:
+-                logger.typewriter_log("SYSTEM: ", Fore.YELLOW, result)
+-            else:
+-                logger.typewriter_log("SYSTEM: ", Fore.YELLOW, "Unable to execute command")
++        ###################
++        # Execute Command #
++        ###################
++        # Decrement the cycle counter first to reduce the likelihood of a SIGINT
++        # happening during command execution, setting the cycles remaining to 1,
++        # and then having the decrement set it to 0, exiting the application.
++        if command_name != "human_feedback":
++            cycles_remaining -= 1
++        result = agent.execute(command_name, command_args, user_input)
++
++        if result is not None:
++            logger.typewriter_log("SYSTEM: ", Fore.YELLOW, result)
++        else:
++            logger.typewriter_log("SYSTEM: ", Fore.YELLOW, "Unable to execute command")
+ 
+ 
+ def update_user(
+diff --git a/repair_agent/autogpt/commands/defects4j.py b/repair_agent/autogpt/commands/defects4j.py
+index d61f4bb..9c02c83 100644
+--- a/repair_agent/autogpt/commands/defects4j.py
++++ b/repair_agent/autogpt/commands/defects4j.py
+@@ -101,9 +101,6 @@ def create_deletion_template(project_name, bug_number):
+ 
+ 
+ def run_checkout(project_name: str, bug_index:int, agent: Agent):
+-    if agent.debugger:
+-        agent.debugger.commit_agent_changes()
+-        
+     cmd_temp = "defects4j checkout -p {} -v {}b -w {}"
+     folder_name = "_".join([project_name.lower(), str(bug_index), "buggy"])
+     if os.path.exists(os.path.join("auto_gpt_workspace", folder_name)):
+@@ -120,7 +117,7 @@ def run_checkout(project_name: str, bug_index:int, agent: Agent):
+         str: The output of the checkout command
+     """
+     logger.info(
+-        f"defects4j.py: Restoring project '{project_name}', bug number {bug_index}, in working directory '{agent.config.workspace_path}'"
++        f"Restoring project '{project_name}', bug number {bug_index}, in working directory '{agent.config.workspace_path}'"
+     )
+ 
+     if we_are_running_in_a_docker_container():
+@@ -134,10 +131,6 @@ def run_checkout(project_name: str, bug_index:int, agent: Agent):
+             cwd=agent.config.workspace_path,
+             shell=True
+         )
+-        
+-        if agent.debugger:
+-            agent.debugger.commit_agent_changes(commit_summary='Reverted agent changes.')
+-            
+         if result.returncode == 0:
+             return "The changed files were restored to their original content"
+         else:
+@@ -719,11 +712,6 @@ def execute_write_range(project_name, bug_index, changes_dicts, agent):
+         change_dict["file_name"] = os.path.join(project_dir,filepath)
+     
+         apply_changes(change_dict)
+-    
+-    if agent.debugger:
+-        agent.debugger.post_debug_message('Commit agent changes...')
+-        if not agent.debugger.commit_agent_changes():
+-            agent.debugger.post_debug_message('Nothing to commit...')
+ 
+     run_ret = run_defects4j_tests(project_name, bug_index, agent)
+     return "Lines written successfully, the result of running test cases on the modified code is the following:\n" + run_ret
+@@ -1606,9 +1594,8 @@ def apply_changes(change_dict):
+         modified_line = modification.get("modified_line", "")
+         if 1 <= int(line_number) <= len(lines):
+             orig_line = lines[int(line_number) - 1]
+-            #if fuzz.ratio(orig_line, modified_line) < 70:
+-            #    continue
+-            logger.info(f'Change line {line_number} in {file_name}: "{orig_line}" to "{modified_line}"')
++            if fuzz.ratio(orig_line, modified_line) < 70:
++                continue
+             if modified_line.endswith("\n"):
+                 lines[int(line_number) - 1] = modified_line
+             else:
+diff --git a/repair_agent/autogpt/commands/defects4j_static.py b/repair_agent/autogpt/commands/defects4j_static.py
+index 5364c75..318fc30 100644
+--- a/repair_agent/autogpt/commands/defects4j_static.py
++++ b/repair_agent/autogpt/commands/defects4j_static.py
+@@ -153,7 +153,7 @@ def run_checkout(name: str, index:int, workspace):
+         str: The output of the checkout command
+     """
+     logger.info(
+-        f"defects4j_static.py: Restoring project '{name}', bug number {index}, in working directory '{workspace}'"
++        f"Restoring project '{name}', bug number {index}, in working directory '{workspace}'"
+     )
+ 
+     if we_are_running_in_a_docker_container():
+diff --git a/repair_agent/autogpt/config/config.py b/repair_agent/autogpt/config/config.py
+index 1f80d17..8bd0d99 100644
+--- a/repair_agent/autogpt/config/config.py
++++ b/repair_agent/autogpt/config/config.py
+@@ -21,8 +21,8 @@ AZURE_CONFIG_FILE = "azure.yaml"
+ PLUGINS_CONFIG_FILE = "plugins_config.yaml"
+ PROMPT_SETTINGS_FILE = "prompt_settings.yaml"
+ 
+-GPT_4_MODEL = "gpt-4o-mini"
+-GPT_3_MODEL = "gpt-4o-mini"
++GPT_4_MODEL = "gpt-4"
++GPT_3_MODEL = "gpt-3.5-turbo-0125"
+ 
+ 
+ class Config(SystemSettings, arbitrary_types_allowed=True):
+diff --git a/repair_agent/autogpt/llm/base.py b/repair_agent/autogpt/llm/base.py
+index 5d40a44..1ac0011 100644
+--- a/repair_agent/autogpt/llm/base.py
++++ b/repair_agent/autogpt/llm/base.py
+@@ -42,17 +42,6 @@ class Message:
+     def raw(self) -> MessageDict:
+         return {"role": self.role, "content": self.content}
+ 
+-    @classmethod
+-    def fromDict(cls, dict: "MessageDict", type: Optional["MessageType"] = None) -> "Message":
+-        return cls(
+-            role=dict["role"],
+-            content=dict["content"],
+-            type=type
+-        )
+-
+-    @classmethod
+-    def fromDictList(cls, data_list: list["MessageDict"], type: Optional["MessageType"] = None) -> list["Message"]:
+-        return [cls.fromDict(data, type=type) for data in data_list]
+ 
+ @dataclass
+ class ModelInfo:
+@@ -142,10 +131,6 @@ class ChatSequence:
+     def insert(self, index: int, *messages: Message):
+         for message in reversed(messages):
+             self.messages.insert(index, message)
+-            
+-    def setFromDictList(self, messages: list[MessageDict]):
+-        self.messages.clear()
+-        self.extend(Message.fromDictList(messages))
+ 
+     @classmethod
+     def for_model(
+diff --git a/repair_agent/autogpt/llm/providers/openai.py b/repair_agent/autogpt/llm/providers/openai.py
+index 7add02c..dfb9bfe 100644
+--- a/repair_agent/autogpt/llm/providers/openai.py
++++ b/repair_agent/autogpt/llm/providers/openai.py
+@@ -82,12 +82,6 @@ OPEN_AI_CHAT_MODELS = {
+             max_tokens=16384,
+             supports_functions=True,
+         ),
+-        ChatModelInfo(
+-            name="gpt-4o-mini",
+-            prompt_token_cost=0.00000015,
+-            completion_token_cost=0.0000006,
+-            max_tokens=16384,
+-        )
+     ]
+ }
+ 
+diff --git a/repair_agent/defects4j b/repair_agent/defects4j
+index a51f3d0..88c6225 160000
+--- a/repair_agent/defects4j
++++ b/repair_agent/defects4j
+@@ -1 +1 @@
+-Subproject commit a51f3d03923c0c4b549d70285330447b34e68af3
++Subproject commit 88c6225ee54c4fa0c7c00c50762333fe64d1426f
+diff --git a/repair_agent/experimental_setups/batches/0 b/repair_agent/experimental_setups/batches/0
+new file mode 100644
+index 0000000..9edc8d8
+--- /dev/null
++++ b/repair_agent/experimental_setups/batches/0
+@@ -0,0 +1,399 @@
++JacksonDatabind 17
++
++JacksonDatabind 65
++
++JacksonDatabind 14
++
++JacksonDatabind 58
++
++JacksonDatabind 9
++
++JacksonDatabind 23
++
++JacksonDatabind 47
++
++JacksonDatabind 102
++
++JacksonDatabind 21
++
++JacksonDatabind 56
++
++JacksonDatabind 48
++
++JacksonDatabind 33
++
++JacksonDatabind 34
++
++JacksonDatabind 50
++
++JacksonDatabind 4
++
++JacksonDatabind 25
++
++JacksonDatabind 6
++
++JacksonDatabind 16
++
++JacksonDatabind 26
++
++JacksonDatabind 111
++
++JacksonDatabind 83
++
++JacksonDatabind 93
++
++JacksonDatabind 71
++
++JacksonDatabind 68
++
++JacksonDatabind 108
++
++JacksonDatabind 69
++
++JacksonDatabind 61
++
++JacksonDatabind 40
++
++JacksonDatabind 5
++
++JacksonDatabind 18
++
++JacksonDatabind 8
++
++JacksonDatabind 2
++
++JacksonDatabind 42
++
++JacksonDatabind 1
++
++JacksonDatabind 31
++
++JacksonDatabind 27
++
++JacksonDatabind 66
++
++JacksonDatabind 15
++
++JacksonDatabind 36
++
++JacksonDatabind 86
++
++JacksonDatabind 46
++
++JacksonDatabind 100
++
++JacksonDatabind 55
++
++JacksonDatabind 95
++
++JacksonDatabind 80
++
++JacksonDatabind 87
++
++JacksonDatabind 76
++
++JacksonDatabind 79
++
++JacksonDatabind 49
++
++JacksonDatabind 43
++
++JacksonDatabind 107
++
++JacksonDatabind 19
++
++JacksonDatabind 59
++
++JacksonDatabind 104
++
++JacksonDatabind 53
++
++JacksonDatabind 29
++
++JacksonDatabind 63
++
++JacksonDatabind 22
++
++JacksonDatabind 51
++
++JacksonDatabind 57
++
++JacksonDatabind 78
++
++JacksonDatabind 62
++
++JacksonDatabind 81
++
++JacksonDatabind 89
++
++JacksonDatabind 38
++
++JacksonDatabind 11
++
++JacksonDatabind 12
++
++JacksonDatabind 74
++
++JacksonDatabind 105
++
++JacksonDatabind 91
++
++JacksonDatabind 70
++
++JacksonDatabind 106
++
++JacksonDatabind 101
++
++JacksonDatabind 84
++
++JacksonDatabind 90
++
++JacksonDatabind 109
++
++JacksonDatabind 75
++
++JacksonDatabind 88
++
++JacksonDatabind 41
++
++JacksonDatabind 77
++
++JacksonDatabind 98
++
++JacksonDatabind 97
++
++JacksonDatabind 96
++
++JacksonDatabind 13
++
++JacksonDatabind 3
++
++JacksonDatabind 20
++
++JacksonDatabind 24
++
++JacksonDatabind 110
++
++JacksonDatabind 82
++
++JacksonDatabind 35
++
++JacksonDatabind 94
++
++JacksonDatabind 64
++
++JacksonDatabind 92
++
++JacksonDatabind 37
++
++JacksonDatabind 112
++
++JacksonDatabind 73
++
++JacksonDatabind 72
++
++JacksonDatabind 54
++
++JacksonDatabind 85
++
++JacksonDatabind 103
++
++JacksonDatabind 28
++
++JacksonDatabind 32
++
++JacksonDatabind 52
++
++JacksonDatabind 67
++
++JacksonDatabind 99
++
++JacksonDatabind 44
++
++JacksonDatabind 60
++
++JacksonDatabind 7
++
++JacksonDatabind 39
++
++JacksonDatabind 45
++
++JacksonDatabind 30
++
++JacksonDatabind 10
++
++Mockito 17
++
++Mockito 14
++
++Mockito 9
++
++Mockito 23
++
++Mockito 21
++
++Mockito 33
++
++Mockito 34
++
++Mockito 4
++
++Mockito 25
++
++Mockito 6
++
++Mockito 16
++
++Mockito 26
++
++Mockito 5
++
++Mockito 18
++
++Mockito 8
++
++Mockito 2
++
++Mockito 1
++
++Mockito 31
++
++Mockito 27
++
++Mockito 15
++
++Mockito 36
++
++Mockito 19
++
++Mockito 29
++
++Mockito 22
++
++Mockito 38
++
++Mockito 11
++
++Mockito 12
++
++Mockito 13
++
++Mockito 3
++
++Mockito 20
++
++Mockito 24
++
++Mockito 35
++
++Mockito 37
++
++Mockito 28
++
++Mockito 32
++
++Mockito 7
++
++Mockito 30
++
++Mockito 10
++
++Closure 17
++
++Closure 65
++
++Closure 14
++
++Closure 58
++
++Closure 171
++
++Closure 163
++
++Closure 9
++
++Closure 143
++
++Closure 23
++
++Closure 164
++
++Closure 141
++
++Closure 47
++
++Closure 152
++
++Closure 102
++
++Closure 21
++
++Closure 172
++
++Closure 175
++
++Closure 56
++
++Closure 157
++
++Closure 48
++
++Closure 33
++
++Closure 34
++
++Closure 50
++
++Closure 4
++
++Closure 173
++
++Closure 25
++
++Closure 6
++
++Closure 176
++
++Closure 150
++
++Closure 142
++
++Closure 16
++
++Closure 115
++
++Closure 26
++
++Closure 111
++
++Closure 83
++
++Closure 120
++
++Closure 93
++
++Closure 71
++
++Closure 162
++
++Closure 68
++
++Closure 108
++
++Closure 69
++
++Closure 61
++
++Closure 40
++
++Closure 5
++
++Closure 18
++
++Closure 8
++
++Closure 2
++
++Closure 42
++
++Closure 1
+\ No newline at end of file
+diff --git a/repair_agent/experimental_setups/batches/1 b/repair_agent/experimental_setups/batches/1
+new file mode 100644
+index 0000000..48faf6a
+--- /dev/null
++++ b/repair_agent/experimental_setups/batches/1
+@@ -0,0 +1,399 @@
++Closure 31
++
++Closure 131
++
++Closure 158
++
++Closure 126
++
++Closure 160
++
++Closure 27
++
++Closure 66
++
++Closure 15
++
++Closure 36
++
++Closure 86
++
++Closure 128
++
++Closure 46
++
++Closure 137
++
++Closure 100
++
++Closure 55
++
++Closure 95
++
++Closure 80
++
++Closure 134
++
++Closure 87
++
++Closure 123
++
++Closure 154
++
++Closure 76
++
++Closure 79
++
++Closure 49
++
++Closure 130
++
++Closure 43
++
++Closure 161
++
++Closure 107
++
++Closure 19
++
++Closure 147
++
++Closure 59
++
++Closure 104
++
++Closure 53
++
++Closure 145
++
++Closure 29
++
++Closure 63
++
++Closure 22
++
++Closure 151
++
++Closure 51
++
++Closure 140
++
++Closure 57
++
++Closure 146
++
++Closure 78
++
++Closure 121
++
++Closure 149
++
++Closure 114
++
++Closure 153
++
++Closure 62
++
++Closure 81
++
++Closure 89
++
++Closure 38
++
++Closure 11
++
++Closure 12
++
++Closure 74
++
++Closure 135
++
++Closure 105
++
++Closure 168
++
++Closure 124
++
++Closure 148
++
++Closure 91
++
++Closure 70
++
++Closure 106
++
++Closure 169
++
++Closure 101
++
++Closure 127
++
++Closure 84
++
++Closure 165
++
++Closure 90
++
++Closure 166
++
++Closure 155
++
++Closure 109
++
++Closure 144
++
++Closure 75
++
++Closure 159
++
++Closure 88
++
++Closure 118
++
++Closure 132
++
++Closure 113
++
++Closure 41
++
++Closure 77
++
++Closure 98
++
++Closure 97
++
++Closure 96
++
++Closure 139
++
++Closure 13
++
++Closure 3
++
++Closure 125
++
++Closure 170
++
++Closure 20
++
++Closure 24
++
++Closure 119
++
++Closure 116
++
++Closure 110
++
++Closure 82
++
++Closure 122
++
++Closure 35
++
++Closure 94
++
++Closure 64
++
++Closure 92
++
++Closure 37
++
++Closure 138
++
++Closure 117
++
++Closure 112
++
++Closure 73
++
++Closure 129
++
++Closure 72
++
++Closure 54
++
++Closure 85
++
++Closure 103
++
++Closure 28
++
++Closure 167
++
++Closure 32
++
++Closure 52
++
++Closure 67
++
++Closure 99
++
++Closure 44
++
++Closure 60
++
++Closure 156
++
++Closure 7
++
++Closure 39
++
++Closure 174
++
++Closure 45
++
++Closure 133
++
++Closure 30
++
++Closure 136
++
++Closure 10
++
++JxPath 17
++
++JxPath 14
++
++JxPath 9
++
++JxPath 21
++
++JxPath 4
++
++JxPath 6
++
++JxPath 16
++
++JxPath 5
++
++JxPath 18
++
++JxPath 8
++
++JxPath 2
++
++JxPath 1
++
++JxPath 15
++
++JxPath 19
++
++JxPath 22
++
++JxPath 11
++
++JxPath 12
++
++JxPath 13
++
++JxPath 3
++
++JxPath 20
++
++JxPath 7
++
++JxPath 10
++
++Csv 14
++
++Csv 9
++
++Csv 4
++
++Csv 6
++
++Csv 16
++
++Csv 5
++
++Csv 8
++
++Csv 2
++
++Csv 1
++
++Csv 15
++
++Csv 11
++
++Csv 12
++
++Csv 13
++
++Csv 3
++
++Csv 7
++
++Csv 10
++
++Chart 17
++
++Chart 14
++
++Chart 9
++
++Chart 23
++
++Chart 21
++
++Chart 4
++
++Chart 25
++
++Chart 6
++
++Chart 16
++
++Chart 26
++
++Chart 5
++
++Chart 18
++
++Chart 8
++
++Chart 2
++
++Chart 1
++
++Chart 15
++
++Chart 19
++
++Chart 22
++
++Chart 11
++
++Chart 12
++
++Chart 13
++
++Chart 3
++
++Chart 20
++
++Chart 24
++
++Chart 7
++
++Chart 10
++
++Codec 17
++
++Codec 14
++
++Codec 9
++
++Codec 4
++
++Codec 6
++
++Codec 16
++
++Codec 5
++
++Codec 18
++
++Codec 8
++
++Codec 2
+\ No newline at end of file
+diff --git a/repair_agent/experimental_setups/batches/2 b/repair_agent/experimental_setups/batches/2
+new file mode 100644
+index 0000000..cde0a6a
+--- /dev/null
++++ b/repair_agent/experimental_setups/batches/2
+@@ -0,0 +1,399 @@
++Codec 1
++
++Codec 15
++
++Codec 11
++
++Codec 12
++
++Codec 13
++
++Codec 3
++
++Codec 7
++
++Codec 10
++
++Time 17
++
++Time 14
++
++Time 9
++
++Time 23
++
++Time 21
++
++Time 4
++
++Time 25
++
++Time 6
++
++Time 16
++
++Time 26
++
++Time 5
++
++Time 18
++
++Time 8
++
++Time 2
++
++Time 1
++
++Time 27
++
++Time 15
++
++Time 19
++
++Time 22
++
++Time 11
++
++Time 12
++
++Time 13
++
++Time 3
++
++Time 20
++
++Time 24
++
++Time 7
++
++Time 10
++
++Collections 17
++
++Collections 14
++
++Collections 9
++
++Collections 23
++
++Collections 21
++
++Collections 4
++
++Collections 25
++
++Collections 6
++
++Collections 16
++
++Collections 26
++
++Collections 5
++
++Collections 18
++
++Collections 8
++
++Collections 2
++
++Collections 1
++
++Collections 27
++
++Collections 15
++
++Collections 19
++
++Collections 22
++
++Collections 11
++
++Collections 12
++
++Collections 13
++
++Collections 3
++
++Collections 20
++
++Collections 24
++
++Collections 28
++
++Collections 7
++
++Collections 10
++
++Compress 17
++
++Compress 14
++
++Compress 9
++
++Compress 23
++
++Compress 47
++
++Compress 21
++
++Compress 33
++
++Compress 34
++
++Compress 4
++
++Compress 25
++
++Compress 6
++
++Compress 16
++
++Compress 26
++
++Compress 40
++
++Compress 5
++
++Compress 18
++
++Compress 8
++
++Compress 2
++
++Compress 42
++
++Compress 1
++
++Compress 31
++
++Compress 27
++
++Compress 15
++
++Compress 36
++
++Compress 46
++
++Compress 43
++
++Compress 19
++
++Compress 29
++
++Compress 22
++
++Compress 38
++
++Compress 11
++
++Compress 12
++
++Compress 41
++
++Compress 13
++
++Compress 3
++
++Compress 20
++
++Compress 24
++
++Compress 35
++
++Compress 37
++
++Compress 28
++
++Compress 32
++
++Compress 44
++
++Compress 7
++
++Compress 39
++
++Compress 45
++
++Compress 30
++
++Compress 10
++
++Cli 17
++
++Cli 14
++
++Cli 9
++
++Cli 23
++
++Cli 21
++
++Cli 33
++
++Cli 34
++
++Cli 4
++
++Cli 25
++
++Cli 6
++
++Cli 16
++
++Cli 26
++
++Cli 40
++
++Cli 5
++
++Cli 18
++
++Cli 8
++
++Cli 2
++
++Cli 1
++
++Cli 31
++
++Cli 27
++
++Cli 15
++
++Cli 36
++
++Cli 19
++
++Cli 29
++
++Cli 22
++
++Cli 38
++
++Cli 11
++
++Cli 12
++
++Cli 13
++
++Cli 3
++
++Cli 20
++
++Cli 24
++
++Cli 35
++
++Cli 37
++
++Cli 28
++
++Cli 32
++
++Cli 7
++
++Cli 39
++
++Cli 30
++
++Cli 10
++
++JacksonXml 4
++
++JacksonXml 6
++
++JacksonXml 5
++
++JacksonXml 2
++
++JacksonXml 1
++
++JacksonXml 3
++
++Jsoup 17
++
++Jsoup 65
++
++Jsoup 14
++
++Jsoup 58
++
++Jsoup 9
++
++Jsoup 23
++
++Jsoup 47
++
++Jsoup 21
++
++Jsoup 56
++
++Jsoup 48
++
++Jsoup 33
++
++Jsoup 34
++
++Jsoup 50
++
++Jsoup 4
++
++Jsoup 25
++
++Jsoup 6
++
++Jsoup 16
++
++Jsoup 26
++
++Jsoup 83
++
++Jsoup 93
++
++Jsoup 71
++
++Jsoup 68
++
++Jsoup 69
++
++Jsoup 61
++
++Jsoup 40
++
++Jsoup 5
++
++Jsoup 18
++
++Jsoup 8
++
++Jsoup 2
++
++Jsoup 42
++
++Jsoup 1
++
++Jsoup 31
++
++Jsoup 27
++
++Jsoup 66
++
++Jsoup 15
++
++Jsoup 36
++
++Jsoup 86
++
++Jsoup 46
++
++Jsoup 55
++
++Jsoup 80
++
++Jsoup 87
++
++Jsoup 76
++
++Jsoup 79
++
++Jsoup 49
+\ No newline at end of file
+diff --git a/repair_agent/experimental_setups/batches/3 b/repair_agent/experimental_setups/batches/3
+new file mode 100644
+index 0000000..918367b
+--- /dev/null
++++ b/repair_agent/experimental_setups/batches/3
+@@ -0,0 +1,399 @@
++Jsoup 43
++
++Jsoup 19
++
++Jsoup 59
++
++Jsoup 53
++
++Jsoup 29
++
++Jsoup 63
++
++Jsoup 22
++
++Jsoup 51
++
++Jsoup 57
++
++Jsoup 78
++
++Jsoup 62
++
++Jsoup 81
++
++Jsoup 89
++
++Jsoup 38
++
++Jsoup 11
++
++Jsoup 12
++
++Jsoup 74
++
++Jsoup 91
++
++Jsoup 70
++
++Jsoup 84
++
++Jsoup 90
++
++Jsoup 75
++
++Jsoup 88
++
++Jsoup 41
++
++Jsoup 77
++
++Jsoup 13
++
++Jsoup 3
++
++Jsoup 20
++
++Jsoup 24
++
++Jsoup 82
++
++Jsoup 35
++
++Jsoup 64
++
++Jsoup 92
++
++Jsoup 37
++
++Jsoup 73
++
++Jsoup 72
++
++Jsoup 54
++
++Jsoup 85
++
++Jsoup 28
++
++Jsoup 32
++
++Jsoup 52
++
++Jsoup 67
++
++Jsoup 44
++
++Jsoup 60
++
++Jsoup 7
++
++Jsoup 39
++
++Jsoup 45
++
++Jsoup 30
++
++Jsoup 10
++
++Lang 17
++
++Lang 65
++
++Lang 14
++
++Lang 58
++
++Lang 9
++
++Lang 23
++
++Lang 47
++
++Lang 21
++
++Lang 56
++
++Lang 48
++
++Lang 33
++
++Lang 34
++
++Lang 50
++
++Lang 4
++
++Lang 25
++
++Lang 6
++
++Lang 16
++
++Lang 26
++
++Lang 61
++
++Lang 40
++
++Lang 5
++
++Lang 18
++
++Lang 8
++
++Lang 2
++
++Lang 42
++
++Lang 1
++
++Lang 31
++
++Lang 27
++
++Lang 15
++
++Lang 36
++
++Lang 46
++
++Lang 55
++
++Lang 49
++
++Lang 43
++
++Lang 19
++
++Lang 59
++
++Lang 53
++
++Lang 29
++
++Lang 63
++
++Lang 22
++
++Lang 51
++
++Lang 57
++
++Lang 62
++
++Lang 38
++
++Lang 11
++
++Lang 12
++
++Lang 41
++
++Lang 13
++
++Lang 3
++
++Lang 20
++
++Lang 24
++
++Lang 35
++
++Lang 64
++
++Lang 37
++
++Lang 54
++
++Lang 28
++
++Lang 32
++
++Lang 52
++
++Lang 44
++
++Lang 60
++
++Lang 7
++
++Lang 39
++
++Lang 45
++
++Lang 30
++
++Lang 10
++
++JacksonCore 17
++
++JacksonCore 14
++
++JacksonCore 9
++
++JacksonCore 23
++
++JacksonCore 21
++
++JacksonCore 4
++
++JacksonCore 25
++
++JacksonCore 6
++
++JacksonCore 16
++
++JacksonCore 26
++
++JacksonCore 5
++
++JacksonCore 18
++
++JacksonCore 8
++
++JacksonCore 2
++
++JacksonCore 1
++
++JacksonCore 15
++
++JacksonCore 19
++
++JacksonCore 22
++
++JacksonCore 11
++
++JacksonCore 12
++
++JacksonCore 13
++
++JacksonCore 3
++
++JacksonCore 20
++
++JacksonCore 24
++
++JacksonCore 7
++
++JacksonCore 10
++
++Math 17
++
++Math 65
++
++Math 14
++
++Math 58
++
++Math 9
++
++Math 23
++
++Math 47
++
++Math 102
++
++Math 21
++
++Math 56
++
++Math 48
++
++Math 33
++
++Math 34
++
++Math 50
++
++Math 4
++
++Math 25
++
++Math 6
++
++Math 16
++
++Math 26
++
++Math 83
++
++Math 93
++
++Math 71
++
++Math 68
++
++Math 69
++
++Math 61
++
++Math 40
++
++Math 5
++
++Math 18
++
++Math 8
++
++Math 2
++
++Math 42
++
++Math 1
++
++Math 31
++
++Math 27
++
++Math 66
++
++Math 15
++
++Math 36
++
++Math 86
++
++Math 46
++
++Math 100
++
++Math 55
++
++Math 95
++
++Math 80
++
++Math 87
++
++Math 76
++
++Math 79
++
++Math 49
++
++Math 43
++
++Math 19
++
++Math 59
++
++Math 104
++
++Math 53
++
++Math 29
++
++Math 63
++
++Math 22
++
++Math 51
++
++Math 57
++
++Math 78
++
++Math 62
++
++Math 81
+\ No newline at end of file
+diff --git a/repair_agent/experimental_setups/batches/4 b/repair_agent/experimental_setups/batches/4
+new file mode 100644
+index 0000000..42e18ed
+--- /dev/null
++++ b/repair_agent/experimental_setups/batches/4
+@@ -0,0 +1,127 @@
++Math 89
++
++Math 38
++
++Math 11
++
++Math 12
++
++Math 74
++
++Math 105
++
++Math 91
++
++Math 70
++
++Math 106
++
++Math 101
++
++Math 84
++
++Math 90
++
++Math 75
++
++Math 88
++
++Math 41
++
++Math 77
++
++Math 98
++
++Math 97
++
++Math 96
++
++Math 13
++
++Math 3
++
++Math 20
++
++Math 24
++
++Math 82
++
++Math 35
++
++Math 94
++
++Math 64
++
++Math 92
++
++Math 37
++
++Math 73
++
++Math 72
++
++Math 54
++
++Math 85
++
++Math 103
++
++Math 28
++
++Math 32
++
++Math 52
++
++Math 67
++
++Math 99
++
++Math 44
++
++Math 60
++
++Math 7
++
++Math 39
++
++Math 45
++
++Math 30
++
++Math 10
++
++Gson 17
++
++Gson 14
++
++Gson 9
++
++Gson 4
++
++Gson 6
++
++Gson 16
++
++Gson 5
++
++Gson 18
++
++Gson 8
++
++Gson 2
++
++Gson 1
++
++Gson 15
++
++Gson 11
++
++Gson 12
++
++Gson 13
++
++Gson 3
++
++Gson 7
++
++Gson 10
+\ No newline at end of file
+diff --git a/repair_agent/experimental_setups/bugs_list b/repair_agent/experimental_setups/bugs_list
+index 4b9ec1a..b4c0149 100644
+--- a/repair_agent/experimental_setups/bugs_list
++++ b/repair_agent/experimental_setups/bugs_list
+@@ -1 +1,19 @@
+-Compress 16
+\ No newline at end of file
++Codec 4
++
++Compress 1
++
++Compress 16
++
++Compress 19
++
++Csv 1
++
++Csv 4
++
++Gson 13
++
++Gson 15
++
++JacksonCore 5
++
++JacksonCore 8
+\ No newline at end of file
+diff --git a/repair_agent/experimental_setups/gitbuglist b/repair_agent/experimental_setups/gitbuglist
+new file mode 100644
+index 0000000..194a86d
+--- /dev/null
++++ b/repair_agent/experimental_setups/gitbuglist
+@@ -0,0 +1,199 @@
++AuthMe-ConfigMe-7bf10c513479
++
++AuthMe-ConfigMe-aa91a6b315ec
++
++Bindambc-whatsapp-business-java-api-362caf5eb33c
++
++Bindambc-whatsapp-business-java-api-fd321cb63437
++
++BrightSpots-rcv-688920f27706
++
++BrightSpots-rcv-c80e6272c83a
++
++Enigmatis-graphql-java-annotations-183752ce8b9a
++
++GoSimpleLLC-nbvcxz-ee8d5c62f4fb
++
++IBM-JSONata4Java-1485a41ccf50
++
++LMAX-Exchange-Simple-DSL-7d81cd9e2951
++
++LMAX-Exchange-Simple-DSL-81182e58bd80
++
++Moderocky-ByteSkript-1dce2997df7f
++
++Netflix-frigga-126b52a55863
++
++TheAlgorithms-Java-e5c7a08874a6
++
++TheAlgorithms-Java-a3a2d845d563
++
++YehiaFarghaly-database-engine-8314bfdec0aa
++
++YehiaFarghaly-database-engine-c5f961f27373
++
++adoble-adr-j-7fe616c55a5b
++
++assertj-assertj-vavr-f4d7f276e87c
++
++aws-aws-secretsmanager-jdbc-d25e52d637cf
++
++aws-event-ruler-68481127e050
++
++awslabs-aws-java-nio-spi-for-s3-8ae86f85f328
++
++awslabs-aws-java-nio-spi-for-s3-ea1044d51bb4
++
++ballerina-platform-lsp4intellij-8b03eddead47
++
++beanshell-beanshell-7a60a06bb567
++
++beanshell-beanshell-f345606a29bd
++
++bhlangonijr-chesslib-cf68677eac6d
++
++c-rack-cbor-java-cabd70d02e86
++
++cdimascio-dotenv-java-bbfbcfa63e3a
++
++cloudsimplus-cloudsimplus-61c8b942d1ec
++
++crawler-commons-crawler-commons-2c2cb3bf7a95
++
++crowdin-crowdin-api-client-java-f0f22b2b56d7
++
++damianszczepanik-cucumber-reporting-f11e9867941b
++
++davidmoten-openapi-to-plantuml-773340861981
++
++davidmoten-word-wrap-e59eedf0bac7
++
++dmak-jaxb-xew-plugin-f48935133d6a
++
++ezylang-EvalEx-7c39c5478a39
++
++fishercoder1534-Leetcode-2110c6b023b7
++
++fusesource-jansi-58260c6ce08c
++
++giraud-reasonml-idea-plugin-69749af01bcf
++
++giraud-reasonml-idea-plugin-11d991db162a
++
++gitbucket-markedj-2dce74e12083
++
++gradle-common-custom-user-data-gradle-plugin-982c77984b5e
++
++iipc-jwarc-6c7083b72172
++
++iipc-jwarc-62dffb16a1a8
++
++jhy-jsoup-5f20fcc2f728
++
++jhy-jsoup-91b630f86b5c
++
++jitterted-ensembler-60ec3bf0273b
++
++jitterted-ensembler-0e512e5b3677
++
++klausbrunner-solarpositioning-79c0044373b4
++
++klausbrunner-solarpositioning-4d35aecb4840
++
++mthmulders-mcs-7c8b5bc9c7f2
++
++mthmulders-mcs-eff905bef8d8
++
++nikoo28-java-solutions-8d81307ea165
++
++retel-io-ari-proxy-610e9b6725e1
++
++revelc-formatter-maven-plugin-3e9843d2ab99
++
++salesforce-grammaticus-cdf67a1ad578
++
++semver4j-semver4j-de7dadc7ece6
++
++semver4j-semver4j-beb7e5d466c7
++
++slub-urnlib-106be8d1b804
++
++snowflakedb-snowflake-jdbc-002bc9bb528a
++
++snowflakedb-snowflake-jdbc-7444f58c2aef
++
++spring-projects-spring-guice-ce15b8e5802a
++
++spring-projects-spring-retry-e6091f790c64
++
++spring-projects-spring-retry-c89b9516d976
++
++st-tu-dresden-salespoint-85a764f892aa
++
++stellar-java-stellar-sdk-1461c2fc5b89
++
++stellar-java-stellar-sdk-15cc6d2c8131
++
++traccar-traccar-fdbd269b9b99
++
++traccar-traccar-007b4007e063
++
++vmzakharov-dataframe-ec-e9eb4dbe0e70
++
++vmzakharov-dataframe-ec-12af99192d24
++
++w3c-epubcheck-7804c78a53f2
++
++w3c-epubcheck-0759a82ae407
++
++wmixvideo-nfe-67518e14db7e
++
++xtremexp-UT4X-Converter-e16bad18b562
++
++xtremexp-UT4X-Converter-e719841eb260
++
++traccar-traccar-8ae0436e5edb
++
++traccar-traccar-5da3b8fcb480
++
++traccar-traccar-6631d7c4b352
++
++traccar-traccar-e73f36db83b9
++
++traccar-traccar-5a1a8d9192ee
++
++traccar-traccar-dfc546a26f5b
++
++jhy-jsoup-9e5869b6e1e2
++
++traccar-traccar-413d9a49c41a
++
++jhy-jsoup-a349582236a7
++
++traccar-traccar-4ece72558c80
++
++traccar-traccar-94fbc93f8b0a
++
++traccar-traccar-cadcd2676adb
++
++traccar-traccar-4ece72558c80
++
++traccar-traccar-d2ce5af34782
++
++traccar-traccar-33af2928a581
++
++traccar-traccar-782fd787d14b
++
++traccar-traccar-3b6900a95342
++
++BrightSpots-rcv-076f75e2417a
++
++jhy-jsoup-401c8b010e01
++
++traccar-traccar-5e18cb586d34
++
++jitterted-ensembler-c9faf3fba524
++
++traccar-traccar-413d9a49c41a
++
++jhy-jsoup-d126488db626
+\ No newline at end of file
+diff --git a/repair_agent/experimental_setups/selfAPR.txt b/repair_agent/experimental_setups/selfAPR.txt
+new file mode 100644
+index 0000000..eaa27ac
+--- /dev/null
++++ b/repair_agent/experimental_setups/selfAPR.txt
+@@ -0,0 +1 @@
++Lang_29,Math_30,Math_79,Collections_26,Math_57,Chart_1,Closure_168,Closure_38,Closure_62,Closure_73,Math_82,Math_85,Time_19,JacksonCore_5,Compress_19,JacksonCore_25,JacksonDatabind_17,Closure_40,Closure_70,Closure_86,Math_104,Math_11,Math_22,Math_80,Mockito_26,Cli_8,Codec_16,Codec_3,Codec_4,Codec_7,Codec_9,Compress_23,Jsoup_17,Lang_26,Chart_11,Chart_20,Chart_7,Chart_8,Lang_21,Lang_59,Lang_6,Math_72,JacksonDatabind_34,Jsoup_41,Math_33,Math_46,Math_5,JacksonDatabind_27,Chart_9,Closure_10,Closure_104,Closure_11,Closure_113,Closure_125,Closure_18,Closure_57,Lang_58,Math_94,Cli_12,Compress_38,JxPath_12,Math_32,Compress_27,Compress_27,Codec_8,Closure_92,Math_70,Math_75,Cli_27,Jsoup_24,Jsoup_40,Jsoup_62,Lang_33,Math_59,Cli_25,Cli_28,Cli_37,Codec_17,Compress_14,Csv_4,Gson_6,Jsoup_68,Closure_123,Lang_57,Mockito_5,Time_7,Cli_40,Compress_32,JacksonCore_8,JacksonDatabind_57,JacksonXml_5,Math_41,Math_49,JacksonDatabind_83,Closure_126,Closure_46,Closure_6,JacksonDatabind_102,Math_50,Chart_24,Closure_79,Lang_51,JacksonDatabind_46,JacksonDatabind_99,Mockito_29,Lang_45,Math_73,Time_15,Cli_17,Codec_2
+diff --git a/repair_agent/experimental_setups/self_apr_list.txt b/repair_agent/experimental_setups/self_apr_list.txt
+new file mode 100644
+index 0000000..5da69f6
+--- /dev/null
++++ b/repair_agent/experimental_setups/self_apr_list.txt
+@@ -0,0 +1,219 @@
++Lang 29
++
++Math 30
++
++Math 79
++
++Collections 26
++
++Math 57
++
++Chart 1
++
++Closure 168
++
++Closure 38
++
++Closure 62
++
++Closure 73
++
++Math 82
++
++Math 85
++
++Time 19
++
++JacksonCore 5
++
++Compress 19
++
++JacksonCore 25
++
++JacksonDatabind 17
++
++Closure 40
++
++Closure 70
++
++Closure 86
++
++Math 104
++
++Math 11
++
++Math 22
++
++Math 80
++
++Mockito 26
++
++Cli 8
++
++Codec 16
++
++Codec 3
++
++Codec 4
++
++Codec 7
++
++Codec 9
++
++Compress 23
++
++Jsoup 17
++
++Lang 26
++
++Chart 11
++
++Chart 20
++
++Chart 7
++
++Chart 8
++
++Lang 21
++
++Lang 59
++
++Lang 6
++
++Math 72
++
++JacksonDatabind 34
++
++Jsoup 41
++
++Math 33
++
++Math 46
++
++Math 5
++
++JacksonDatabind 27
++
++Chart 9
++
++Closure 10
++
++Closure 104
++
++Closure 11
++
++Closure 113
++
++Closure 125
++
++Closure 18
++
++Closure 57
++
++Lang 58
++
++Math 94
++
++Cli 12
++
++Compress 38
++
++JxPath 12
++
++Math 32
++
++Compress 27
++
++Compress 27
++
++Codec 8
++
++Closure 92
++
++Math 70
++
++Math 75
++
++Cli 27
++
++Jsoup 24
++
++Jsoup 40
++
++Jsoup 62
++
++Lang 33
++
++Math 59
++
++Cli 25
++
++Cli 28
++
++Cli 37
++
++Codec 17
++
++Compress 14
++
++Csv 4
++
++Gson 6
++
++Jsoup 68
++
++Closure 123
++
++Lang 57
++
++Mockito 5
++
++Time 7
++
++Cli 40
++
++Compress 32
++
++JacksonCore 8
++
++JacksonDatabind 57
++
++JacksonXml 5
++
++Math 41
++
++Math 49
++
++JacksonDatabind 83
++
++Closure 126
++
++Closure 46
++
++Closure 6
++
++JacksonDatabind 102
++
++Math 50
++
++Chart 24
++
++Closure 79
++
++Lang 51
++
++JacksonDatabind 46
++
++JacksonDatabind 99
++
++Mockito 29
++
++Lang 45
++
++Math 73
++
++Time 15
++
++Cli 17
++
++Codec 2
+\ No newline at end of file
+diff --git a/repair_agent/requirements.txt b/repair_agent/requirements.txt
+index d0cf741..50764ca 100644
+--- a/repair_agent/requirements.txt
++++ b/repair_agent/requirements.txt
+@@ -48,6 +48,7 @@ numpy
+ pre-commit
+ black
+ isort
++gitpython==3.1.31
+ auto-gpt-plugin-template @ git+https://github.com/Significant-Gravitas/Auto-GPT-Plugin-Template@0.1.0
+ mkdocs
+ mkdocs-material
+@@ -69,6 +70,3 @@ reportlab
+ matplotlib
+ venn
+ pandas
+-
+-websockets
+-GitPython==3.1.44
+\ No newline at end of file
+diff --git a/repair_agent/set_api_key.py b/repair_agent/set_api_key.py
+index 929467a..31e872c 100644
+--- a/repair_agent/set_api_key.py
++++ b/repair_agent/set_api_key.py
+@@ -27,17 +27,10 @@ def main():
+         (".env", "GLOBAL-API-KEY-PLACEHOLDER"),
+     ]
+ 
+-    # Check if OPENAI_API_KEY environment variable is set
+-    replacement_value = os.getenv("OPENAI_API_KEY")
+-    if not replacement_value:
+-        print("Please provide your OpenAI API-KEY.")
+-        replacement_value = input("OpenAI API-KEY: ").strip()
+-        if not replacement_value:
+-            print("Error: API key cannot be empty")
+-            exit(1)
++    print("Please provide your OpenAI API-KEY.")
++    replacement_value = input("OpenAI API-KEY: ").strip()
+ 
+     # Save the replacement value to token.txt
+-    print('Setting LLM API key...')
+     with open("token.txt", "w") as token_file:
+         token_file.write(replacement_value)
+ 

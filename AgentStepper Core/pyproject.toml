@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentstepper-core"
+version = "1.0.0"
+description = "Core component of AgentStepper, an interactive debugger for LLM agents in software development."
+dependencies = [
+    "websockets==15.0.1",
+    "GitPython==3.1.44",
+    "openai==1.79.0",
+    "colorlog==6.9.0",
+    "agentstepper-api==1.0.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]

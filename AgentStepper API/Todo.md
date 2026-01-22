@@ -1,0 +1,4 @@
+# Open Issues and TODO's
+- [ ] Add configuration options for the repository tracking functionality, e.g. if the API should automatically create and checkout to a new branch.
+- [ ] Allow user to toggle the usage of the "shadow workspace" functionality for repository tracking. This feature refers to maintaining a private copy of the repository in a temporary location and copying code changes without git changes to this copy if anything happens. This is sometimes needed to prevent the agent's own commits or git commands from interfering with the repository tracking functionality of AgentStepper.
+- [ ] Add option for configuring the LLM model used for agent changes commit summarization.

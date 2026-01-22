@@ -1,0 +1,23 @@
+.error-notification {
+  position: fixed;
+  top: 20px;
+  right: -400px;
+  background-color: rgba(255, 0, 0, 0.85);
+  color: white;
+  padding: 12px 20px;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transition: right 0.4s ease-in-out, top 0.4s ease-in-out;
+  z-index: 2000;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+}
+
+.error-notification.show {
+  right: 20px;
+}
+
+.connection-lost-notification.show + .error-notification.show {
+  top: 78px;
+}

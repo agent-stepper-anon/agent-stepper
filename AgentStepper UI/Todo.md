@@ -1,0 +1,15 @@
+# Open Issues and TODO's
+- [ ] Add keyboard shortcuts for stepping, continuing and halting execution.
+- [ ] Display timestamps of messages similarly to how shown in chat applications.
+- [ ] Display options menu when hovering above a message. The menu should contain a menu item for inspecting the message.
+- [ ] Save current scroll position when changing and restore previous position when switching between runs.
+- [ ] Implement a smooth transition/animation when a new commit is added to the timeline graph.
+- [ ] Standardize padding, margins, fonts, and font sizes across all elements of the UI.
+- [ ] Enable selecting commit in the activity display by clicking on the commit message in the chat.
+- [ ] Improve highlighting of selected commit in the chat. Important when there are multiple commits on the same page.
+- [ ] Improve shape of message bubbles to make their directionality more obvious. Maybe increase one-sided indentation.
+- [ ] Display full name of run when hovering over it in the runs menu.
+- [ ] Allow resizing of the runs menu by dragging the edge.
+- [ ] Add feedback information bubble after selecting an agent run to import to bridge the gap if the Core is currently waiting on an LLM completion and can't immediately handle the request.
+- [ ] Add configuration options in the UI for setting the LLM model, font size, and other aspects.
+- [ ] Select all (ctrl + a) should only select text within the chat bubble or message inspector (whichever in focus) instead of everything on the site.
